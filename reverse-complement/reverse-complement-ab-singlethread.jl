@@ -59,7 +59,7 @@ function main(bytemap::Vector{UInt8})
         end#if
     end#for
 
-    Threads.@threads for f in fastas
+    for f in fastas
         revcomp!(f, bytemap)
     end#for
     
