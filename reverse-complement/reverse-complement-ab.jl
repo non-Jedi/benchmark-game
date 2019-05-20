@@ -26,28 +26,24 @@ function revcomp!(x::AbstractVector{UInt8}, bytemap::Vector{UInt8})
     left = let eol = findfirst(b -> b === 0x0a, x)
         eol === nothing ? 1 : eol + 1
     end#let
-    right = x[length(x)] === 0x0a ? length(x) - 1 : length(x)
+    @inbounds right = x[length(x)] === 0x0a ? length(x) - 1 : length(x)
     @inbounds while left < right
-        x[left], x[right] = bytemap[x[right]], bytemap[x[left]]
-
-        left += 1
-        right -= 1
-        if x[left] === 0x0a # '\n'
-            left += 1
-        end#if
-        if x[right] === 0x0a # '\n'
-            right -= 1
-        end#if
+        lcur, lnext = x[left], x[left+1]
+        rnext, rcur = x[right-1], x[right]
+        x[left], x[right] = bytemap[rcur], bytemap[lcur]
+        left = lnext === 0x0a ? left + 2 : left + 1
+        right = rnext === 0x0a ? right - 2 : right - 1
     end#while
     # If an odd number, left and right will be same
-    if left === right && x[left] !== 0x0a
-        x[left] = bytemap[x[left]]
+    if left === right
+        @inbounds x[left] = bytemap[x[left]]
     end#if
     nothing
 end#function
 
 function main(bytemap::Vector{UInt8})
     input::Vector{UInt8} = read(stdin)
+
     headers = findall(b -> b === 0x3e, input)
     fastas = Vector{SubArray{UInt8, 1, Vector{UInt8}, Tuple{UnitRange{Int64}},
                              true}}(undef, length(headers))
