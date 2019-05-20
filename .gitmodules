@@ -1,0 +1,3 @@
+[submodule "BenchmarksGame.jl"]
+	path = BenchmarksGame.jl
+	url = https://github.com/KristofferC/BenchmarksGame.jl
