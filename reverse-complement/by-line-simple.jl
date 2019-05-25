@@ -1,5 +1,3 @@
-using Profile
-
 const SIZEHINT = 8192
 const LINESIZE = 60
 
@@ -41,24 +39,9 @@ mutable struct PushVector{T, V<:AbstractVector{T}} <: AbstractVector{T}
     l::Int64
 end#struct
 
-@inline Base.length(v::PushVector) = v.l
-@inline Base.size(v::PushVector) = (v.l, )
-
-function Base.sizehint!(v::PushVector, n)
-    if length(v.v) < n || n ≥ v.l
-        resize!(v.v, n)
-    end#if
-    nothing
-end#function
-
 @inline function Base.getindex(v::PushVector, i)
     @boundscheck checkbounds(v, i)
     @inbounds v.v[i]
-end#function
-
-@inline function Base.setindex!(v::PushVector, x, i)
-    @boundscheck checkbounds(v, i)
-    @inbounds v.v[i] = x
 end#function
 
 Base.empty!(v::PushVector) = (v.l = 0; v)
@@ -79,13 +62,11 @@ end#function
 # end PushVectors.jl
 #-------------------------------------------------------------------------------
 
-@inline Base.resize!(v::PushVector, l) = setfield!(v, :l, l)
 Base.write(io::IO, v::PushVector) = @inbounds write(io, @view(v.v[1:v.l]))
 
 function revcomp!(x::AbstractVector{UInt8}, bytemap::Vector{UInt8})
     len = length(x)
     iter_range = range(1, len ÷ 2; step=1)
-#    Threads.@threads for i in iter_range
     for i in iter_range
         let l = i, r = len - i + 1
             @inbounds x[l], x[r] = bytemap[x[r]], bytemap[x[l]]
@@ -115,23 +96,16 @@ function main(inio::IO, outio::IO, bytemap::Vector{UInt8})
     while !eof(inio)
         line = codeunits(readline(inio))
         if first(line) == 0x3e # '>'
-            revcomp!(data, bytemap)
-            write_chunk(outio, data)
+            @inbounds revcomp!(@view(data.v[1:data.l]), bytemap)
+            @inbounds write_chunk(outio, @view(data.v[1:data.l]))
             write_line(outio, line)
-            resize!(data, 0)
+            empty!(data)
         else
             append!(data, line)
         end#if
     end#while
-    revcomp!(data, bytemap)
-    write_chunk(outio, data)
+    @inbounds revcomp!(@view(data.v[1:data.l]), bytemap)
+    @inbounds write_chunk(outio, @view(data.v[1:data.l]))
 end#function
 
-Profile.init(n=10^7, delay=0.003)
-
-@profile main(stdin, stdout, complementbytes)
-
-open("by-line-simple.jl-profile.txt"; write=true) do f
-    Profile.print(IOContext(f, :displaysize => (24, 600)))
-end#open
-
+main(stdin, stdout, complementbytes)
