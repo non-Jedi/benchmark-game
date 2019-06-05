@@ -11,7 +11,7 @@ for (i, j) in zip(
 end#for
 
 mutable struct BufferedInput{T<:IO}
-    io::IO
+    io::T
     buffer::Vector{UInt8}
     position::Int
 end#struct
@@ -20,9 +20,9 @@ function BufferedInput(io::IO)
     buffer = Vector{UInt8}(undef, READSIZE)
     n = min(readbytes!(io, buffer), READSIZE)
     # Resizing in case available input < READSIZE
-    resize!(buffer, n)
+    @inbounds resize!(buffer, n)
     # Make sure to handle case of empty IO
-    BufferedInput{IO}(io, buffer, isempty(buffer) ? 0 : 1)
+    BufferedInput(io, buffer, isempty(buffer) ? 0 : 1)
 end#function
 
 function refill!(io::BufferedInput)
@@ -31,28 +31,42 @@ function refill!(io::BufferedInput)
     io.position = iszero(n) ? 0 : 1
 end#function
 
-function readline!(io::BufferedInput, line::Vector{UInt8})
-    # TODO: what if io.buffer is empty?
-    if io.position > length(io.buffer)
-        refill!(io)
-    end#if
-    io.position != 0 || return
-    next_newline = length(io.buffer) + 1
-    for i in io.position:length(io.buffer)
-        if io.buffer[i] == '\n' % UInt8
-            next_newline = i
+function next_occurrence(c::T, v::AbstractVector{T}, start::Int) where T
+    next = length(v) + 1
+    @inbounds for i in start:length(v)
+        if v[i] === c
+            next = i
             break
         end#if
     end#for
+    next
+end#function
+
+function readline!(io::BufferedInput, line::Vector{UInt8})
+    io.position != 0 || return
+    next_newline = next_occurrence('\n' % UInt8, io.buffer, io.position)
     if next_newline == length(io.buffer)
-        append!(line, @view(io.buffer[io.position:next_newline - 1]))
+        len = next_newline - io.position
+        resize!(line, len)
+        @inbounds copyto!(line, 1, io.buffer, io.position, len)
         refill!(io)
     elseif next_newline > length(io.buffer)
-        append!(line, @view(io.buffer[io.position:end]))
+        len = length(io.buffer) - io.position + 1
+        resize!(line, len)
+        @inbounds copyto!(line, 1, io.buffer, io.position, len)
         refill!(io)
-        readline!(io, line)
+        if !isempty(io.buffer)
+            next_newline = next_occurrence('\n' % UInt8, io.buffer, io.position)
+            len = next_newline - io.position
+            sp = length(line)
+            resize!(line, sp + len)
+            @inbounds copyto!(line, sp+1, io.buffer, io.position, len)
+            io.position = next_newline + 1
+        end#if
     else
-        append!(line, @view(io.buffer[io.position:next_newline - 1]))
+        len = next_newline - io.position
+        resize!(line, len)
+        @inbounds copyto!(line, 1, io.buffer, io.position, len)
         io.position = next_newline + 1
     end#if
     nothing
@@ -61,9 +75,9 @@ end#function
 function revcomp!(x::AbstractVector{UInt8}, bytemap::Vector{UInt8})
     len = length(x)
     iter_range = range(1, len ÷ 2; step=1)
-    for i in iter_range
+    @inbounds @simd for i in iter_range
         let l = i, r = len - i + 1
-            @inbounds x[l], x[r] = bytemap[x[r]], bytemap[x[l]]
+            x[l], x[r] = bytemap[x[r]], bytemap[x[l]]
         end#let
     end#for
     if isodd(len)
@@ -75,12 +89,21 @@ write_line(io::IO, v::AbstractVector{UInt8}) = (write(io, v); write(io, '\n'))
 
 function write_chunk(io::IO, v::AbstractVector{UInt8})
     if !isempty(v)
+        chunk = Vector{UInt8}(undef, nextpow(2, length(v)))
+        empty!(chunk)
         pos = firstindex(v)
         while pos < length(v) - LINESIZE
-            @inbounds write_line(io, @view(v[pos:pos+LINESIZE-1]))
+            p1 = length(chunk) + 1
+            resize!(chunk, length(chunk) + LINESIZE + 1)
+            @inbounds copyto!(chunk, p1, v, pos, LINESIZE)
+            @inbounds chunk[end] = '\n' % UInt8
             pos += LINESIZE
         end#while
-        @inbounds write_line(io, @view(v[pos:end]))
+        p1 = length(chunk) + 1
+        resize!(chunk, length(chunk) + length(v) - pos + 2)
+        @inbounds copyto!(chunk, p1, v, pos, length(v) - pos + 1)
+        chunk[end] = '\n' % UInt8
+        write(io, chunk)
     end#if
     nothing
 end#function
@@ -95,8 +118,8 @@ function main(inio::IO, outio::IO, bytemap::Vector{UInt8})
     readline!(input, line)
     while !isempty(line)
         if first(line) == 0x3e # '>'
-            @inbounds revcomp!(data, bytemap)
-            @inbounds write_chunk(outio, data)
+            revcomp!(data, bytemap)
+            write_chunk(outio, data)
             write_line(outio, line)
             empty!(data)
         else
@@ -110,8 +133,8 @@ function main(inio::IO, outio::IO, bytemap::Vector{UInt8})
         empty!(line)
         readline!(input, line)
     end#while
-    @inbounds revcomp!(data, bytemap)
-    @inbounds write_chunk(outio, data)
+    revcomp!(data, bytemap)
+    write_chunk(outio, data)
 end#function
 
 main(stdin, stdout, complementbytes)
