@@ -4,8 +4,6 @@ addmul!(x::BigInt, a::BigInt, b::UInt64) =
     ccall((:__gmpz_addmul_ui, :libgmp), Cvoid, (mpz_t, mpz_t, UInt64), x, a, b)
 submul!(x::BigInt, a::BigInt, b::UInt64) =
     ccall((:__gmpz_submul_ui, :libgmp), Cvoid, (mpz_t, mpz_t, UInt64), x, a, b)
-MPZ.mul!(x::BigInt, a::BigInt, b::UInt64) =
-    ccall((:__gmpz_mul_ui, :libgmp), Cvoid, (mpz_t, mpz_t, UInt64), x, a, b)
 get_ui(x::BigInt) = ccall((:__gmpz_get_ui, :libgmp), Culong, (mpz_t,), x)
 
 function gen_digits!(v)
@@ -34,13 +32,13 @@ function next_term!(k, numer, denom, accum)
     k2 = 2k + 1
 
     addmul!(accum, numer, UInt64(2))
-    MPZ.mul!(accum, accum, k2)
-    MPZ.mul!(denom, denom, k2)
-    MPZ.mul!(numer, numer, k)
+    MPZ.mul_ui!(accum, accum, k2)
+    MPZ.mul_ui!(denom, denom, k2)
+    MPZ.mul_ui!(numer, numer, k)
 end#function
 
 function extract_digit(n, numer, denom, accum, tmp)::UInt64
-    MPZ.mul!(tmp, numer, n)
+    MPZ.mul_ui!(tmp, numer, n)
     MPZ.add!(tmp, tmp, accum)
     MPZ.tdiv_q!(tmp, tmp, denom)
     get_ui(tmp)
@@ -48,8 +46,8 @@ end#function
 
 function eliminate_digit!(d, numer, denom, accum)
     submul!(accum, denom, d)
-    MPZ.mul!(accum, accum, UInt64(10))
-    MPZ.mul!(numer, numer, UInt64(10))
+    MPZ.mul_ui!(accum, accum, 10)
+    MPZ.mul_ui!(numer, numer, 10)
 end#function
 
 function main(io, n)
