@@ -3,16 +3,16 @@
 #
 # Contributed by Adam Beckmeyer
 
-import Printf: @printf
+module NBodyAB
 
-const FM = Base.FastMath
+import Printf: @printf
+import Base: @propagate_inbounds
 
 const DAYS_PER_YEAR = 365.24
 const SOLAR_MASS = 4 * π * π
 
 # Use a tuple rather than struct to hint compiler towards simd code
 # 4 floats in tuple instead of 3 generates better SIMD instructions
-const V3d = NTuple{4,Float64}
 V3d(x=0.0, y=0.0, z=0.0) = (Float64(x), Float64(y), Float64(z), 0.0)
 
 # Rust implementation #7 uses pos and v of length 3 with 1 filler
@@ -21,13 +21,13 @@ V3d(x=0.0, y=0.0, z=0.0) = (Float64(x), Float64(y), Float64(z), 0.0)
 # future using https://github.com/eschnett/SIMD.jl. Not sure if it
 # would actually be advantageous though.
 struct Body
-    pos::V3d
-    v::V3d
+    pos::NTuple{4,Float64}
+    v::NTuple{4,Float64}
     m::Float64
 end#struct
 
 # don't bother adding the empty 4th element
-Base.sum(v::V3d) = @inbounds @fastmath +(v[1], v[2], v[3])
+Base.sum(v::NTuple{4,Float64}) = @inbounds +(v[1], v[2], v[3])
 
 function init_sun(bodies)
     p = V3d()
@@ -37,9 +37,9 @@ function init_sun(bodies)
     Body(V3d(), p .* (-inv(SOLAR_MASS)), SOLAR_MASS)
 end#function
 
-Base.@propagate_inbounds function update_velocity(b1, b2, Δt)
+@propagate_inbounds function update_velocity(b1::Body, b2::Body, Δt::Float64)
     Δpos = b1.pos .- b2.pos
-    d² = sum(FM.mul_fast.(Δpos, Δpos))
+    d² = sum(Δpos .* Δpos)
 
     # Fastest implementations use an intrinsic to do a
     # single-precision sqrt approximation followed by two iterations
@@ -50,14 +50,13 @@ Base.@propagate_inbounds function update_velocity(b1, b2, Δt)
     # immediately modifying the body objects. Possible performance
     # gains there due to cache-locality? I've been unable to replicate
     # this in Julia by calculating mag as an NTuple{10,Float64}.
-    @fastmath mag = Δt / (d² * √d²)
-#    (Body(b1.pos, muladd.(@fastmath(-b2.m * mag), Δpos, b1.v), b1.m),
-#        Body(b2.pos, muladd.(@fastmath(b1.m * mag), Δpos, b2.v), b2.m))
-    @fastmath (Body(b1.pos, FM.sub_fast.(b1.v, FM.mul_fast.(b2.m * mag, Δpos)), b1.m),
-               Body(b2.pos, FM.add_fast.(b2.v, FM.mul_fast.(b1.m * mag, Δpos)), b2.m))
+    vmag = Δpos .* (Δt / (d² * √d²))
+
+    (Body(b1.pos, muladd.(-b2.m, vmag, b1.v), b1.m),
+     Body(b2.pos, muladd.( b1.m, vmag, b2.v), b2.m))
 end#function
 
-Base.@propagate_inbounds update_pos(b, Δt) =
+@propagate_inbounds update_pos(b::Body, Δt::Float64) =
     Body(muladd.(b.v, Δt, b.pos), b.v, b.m)
 
 function next!(bodies, Δt)
@@ -135,4 +134,6 @@ function main(io, n, Δt)
     @printf(io, "%.9f\n", energy(bodies))
 end#function
 
-isinteractive() || main(stdout, parse(Int, ARGS[1]), 0.01)
+end#module
+
+isinteractive() || NBodyAB.main(stdout, parse(Int, ARGS[1]), 0.01)
