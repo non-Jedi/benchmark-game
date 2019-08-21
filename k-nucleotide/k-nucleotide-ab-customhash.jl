@@ -4,11 +4,12 @@
 # Contributed by Adam Beckmeyer
 
 import Printf: @printf
+using Base.Threads
 
 const LINESIZE = 61
 const SIZEHINT = 4 * 4096
 const COUNTSFOR = zip(
-    (3, 4, 5, 6, 7),
+    (5, 4, 3, 2, 1),
     collect.(codeunits.(("ggt", "ggta", "ggtatt", "ggtattttaatt",
                          "ggtattttaatttatagt")))
 )
@@ -28,8 +29,13 @@ const BYTE_TO_BITS = Vector{UInt8}(undef, 256)
 @inbounds BYTE_TO_BITS['g' % UInt8] = 0x02
 @inbounds BYTE_TO_BITS['t' % UInt8] = 0x03
 
+# * Override default hash function for UInt32 and UInt64 for performance
+
+# This is the hash function used in C gcc program by Jeremy Zerfas
+Base.hash(x::UInt32)::UInt64 = x ⊻ x >> 7
+Base.hash(x::UInt64)::UInt64 = x ⊻ x >> 7
+
 # * Functions to do the calculation of number of occurrences
-# -----
 
 Base.@propagate_inbounds function hashvec(
     v::AbstractVector{UInt8}, ::Type{T}, indstart, indend
@@ -68,7 +74,6 @@ function count_frame!(frame, seq, dict::AbstractDict{K,V}) where {K,V}
 end#function
 
 # * Get input in the proper format
-# -----
 
 function get_third_seq(io)
     count = 0
@@ -102,10 +107,9 @@ end#function
 isnewline(c::UInt8)::Bool = c === '\n' % UInt8
 
 # * Calculate and format statistics and output
-# -----
 
-function write_freq(io, d, perms)
-    v = [i => d[hashvec(i, UInt8)] for i in perms]
+function write_freq(io, d::Dict{T}, perms) where T
+    v = [i => d[T(hashvec(i, UInt8))] for i in perms]
     sort!(v; rev=true)
     total = sum(last, v)
     for (subseq, freq) in v
@@ -131,26 +135,25 @@ function Base.isless(a::Pair{<:Vector,<:Integer}, b::Pair{<:Vector,<:Integer})
 end#function
 
 # * Tie everything together
-# -----
 
 function main(ioin, ioout)
     seq = get_third_seq(ioin)
-    frames = [1, 2, 3, 4, 6, 12, 18]
-    # All frames can fit into UInt32 except last one
-    freqs = (Dict{UInt32,Int32}(), Dict{UInt32,Int32}(), Dict{UInt32,Int32}(),
+    # All frames can fit into UInt32 except largest
+    freqs = (Dict{UInt64,Int32}(), Dict{UInt32,Int32}(), Dict{UInt32,Int32}(),
              Dict{UInt32,Int32}(), Dict{UInt32,Int32}(), Dict{UInt32,Int32}(),
-             Dict{UInt64,Int32}())
+             Dict{UInt32,Int32}())
     # reverse so iterations that take longest start first
-    @inbounds Threads.@threads for i in reverse(1:length(frames))
+    frames = [18, 12, 6, 4, 3, 2, 1]
+    @inbounds @threads for i in 1:length(frames)
         count_frame!(frames[i], seq, freqs[i])
     end#for
     # output
-    write_freq(ioout, freqs[1], PERMS1)
-    write_freq(ioout, freqs[2], PERMS2)
+    write_freq(ioout, freqs[7], PERMS1)
+    write_freq(ioout, freqs[6], PERMS2)
     for (i, subseq) in COUNTSFOR
         @inbounds write_occurrences(ioout, freqs[i], subseq)
     end#for
     freqs
 end#function
 
-main(stdin, stdout)
+isinteractive() || main(stdin, stdout)
