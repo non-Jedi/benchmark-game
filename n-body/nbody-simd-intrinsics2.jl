@@ -6,24 +6,26 @@
 
 module NBody
 
-const VE = VecElement
-const __m128 = NTuple{4,VE{Float32}}
+using Printf
+
 const F32 = Float32
+const F64 = Float64
+
+const VE = VecElement
+const __m128 = NTuple{4,VE{F32}}
 
 rsqrt(a::__m128) =
     ccall("llvm.x86.sse.rsqrt.ps", llvmcall, __m128, (__m128,), a)
 
-Base.@propagate_inbounds pack(v::Vector{Float64}, i::Int) =
+Base.@propagate_inbounds pack(v::Vector{F64}, i::Int) =
     (VE(F32(v[i])), VE(F32(v[i+1])), VE(F32(v[i+2])), VE(F32(v[i+3])))
 
-Base.@propagate_inbounds function unpack!(v::Vector{Float64}, nt::NTuple{4,F32},
+Base.@propagate_inbounds function unpack!(v::Vector{<:AbstractFloat}, nt::__m128,
                                           i::Int)
     for ind = 1:4
         v[ind+i-1] = nt[ind].value
     end#for
 end#function
-
-using Printf
 
 # Constants
 const solar_mass = 4 * pi * pi
@@ -31,14 +33,43 @@ const days_per_year = 365.24
 
 # A heavenly body in the system
 mutable struct Body
-    x::Float64
-    y::Float64
-    z::Float64
-    vx::Float64
-    vy::Float64
-    vz::Float64
-    mass::Float64
+    x::F64
+    y::F64
+    z::F64
+    vx::F64
+    vy::F64
+    vz::F64
+    mass::F64
 end
+
+const V64 = Vector{F64}
+const V32 = Vector{Float32}
+
+struct Buffers
+    Δx::V64
+    Δy::V64
+    Δz::V64
+    dsq::V64
+    rd::V64
+end#struct
+
+const buffer_fields = fieldnames(Buffers)
+
+Buffers(n::Integer) = Buffers((V64(undef, n) for _ in buffer_fields)...)
+
+# Update Buffers field contents from vector of bodies
+function reset!(buf::Buffers, bodies::Vector{Body})
+    l = length(bodies)
+    k = 1
+    @inbounds for i=1:l
+        for j=i+1:l
+            buf.Δx[k] = bodies[i].x - bodies[j].x
+            buf.Δy[k] = bodies[i].y - bodies[j].y
+            buf.Δz[k] = bodies[i].z - bodies[j].z
+            k += 1
+        end#for
+    end#for
+end#function
 
 function offset_momentum(b::Body, px, py, pz)
     b.vx = -px / solar_mass
@@ -47,9 +78,9 @@ function offset_momentum(b::Body, px, py, pz)
 end
 
 function init_sun(bodies)
-    local px::Float64 = 0.0
-    local py::Float64 = 0.0
-    local pz::Float64 = 0.0
+    local px::F64 = 0.0
+    local py::F64 = 0.0
+    local pz::F64 = 0.0
     for b in bodies
         px += b.vx * b.mass
         py += b.vy * b.mass
@@ -58,66 +89,55 @@ function init_sun(bodies)
     offset_momentum(bodies[1], px, py, pz)
 end
 
-function advance(bodies, dt)
+function advance!(bodies, dt, bufs)
     l = length(bodies)
-    numpairs = l * (l - 1) / 2
-    numvecs = round(numpairs / 4, RoundUp)
+    numpairs = l * (l - 1) ÷ 2
+    numvecs = round(Int, numpairs / 4, RoundUp)
 
-    xi =  Vector{Float64}(undef, numpairs)
-    xj =  Vector{Float64}(undef, numpairs)
-    yi =  Vector{Float64}(undef, numpairs)
-    yj =  Vector{Float64}(undef, numpairs)
-    zi =  Vector{Float64}(undef, numpairs)
-    zj =  Vector{Float64}(undef, numpairs)
-    ind = 1
-    for i = 1:length(bodies)
-        for j = i+1:length(bodies)
-            xi[ind] = bodies[i].x
-            xj[ind] = bodies[j].x
-            yi[ind] = bodies[i].y
-            yi[ind] = bodies[i].y
-            zj[ind] = bodies[j].z
-            zj[ind] = bodies[j].z
-            ind += 1
-        end
-    end
+    reset!(bufs, bodies)
 
-    dx = xi .- xj
-    dy = yi .- yj
-    dz = zi .- zj
+    @inbounds begin
+        @. bufs.dsq = bufs.Δx^2 + bufs.Δy^2 + bufs.Δz^2
 
-    dsq = dx.^2 + dy.^2 + dz.^2
-    resize!(dsq, 4numvecs)
-    d = Vector{Float32}(undef, length(dsq))
-    i = 1
-    while i < l
-        v = pack(dsq, i)
-        v = rsqrt(v)
-        unpack!(d, v, i)
-        i += 4
-    end#while
-    resize!(d, numpairs)
+        resize!(bufs.dsq, 4numvecs)
+        resize!(bufs.rd, 4numvecs)
+        i = 1
+        while i < 4numvecs
+            v = pack(bufs.dsq, i)
+            v = rsqrt(v)
+            unpack!(bufs.rd, v, i)
+            i += 4
+        end#while
+        resize!(bufs.dsq, numpairs)
+        resize!(bufs.rd, numpairs)
 
-    mag = dt .* d .* d .* d
+        # 2 iterations of Newton-Raphson method
+        for i=1:2
+            @. bufs.rd = 1.5*bufs.rd - 0.5*bufs.dsq*bufs.rd*(bufs.rd*bufs.rd)
+        end#for
 
-#    for i = 1:length(bodies)
-#        for j = i+1:length(bodies)
-#            dx = bodies[i].x - bodies[j].x
-#            dy = bodies[i].y - bodies[j].y
-#            dz = bodies[i].z - bodies[j].z
-#            dsq = dx^2 + dy^2 + dz^2
-#            distance = sqrt(dsq)
-#            mag = dt / (dsq * distance)
-#
-#            bodies[i].vx -= dx * bodies[j].mass * mag
-#            bodies[i].vy -= dy * bodies[j].mass * mag
-#            bodies[i].vz -= dz * bodies[j].mass * mag
-#
-#            bodies[j].vx += dx * bodies[i].mass * mag
-#            bodies[j].vy += dy * bodies[i].mass * mag
-#            bodies[j].vz += dz * bodies[i].mass * mag
-#        end
-#    end
+        mag = bufs.rd
+        @. mag = dt * bufs.rd / bufs.dsq
+
+        bufs.Δx .= bufs.Δx .* mag
+        bufs.Δy .= bufs.Δy .* mag
+        bufs.Δz .= bufs.Δz .* mag
+
+        k = 1
+        for i = 1:l
+            for j = i+1:l
+                bodies[i].vx -= bufs.Δx[k] * bodies[j].mass
+                bodies[i].vy -= bufs.Δy[k] * bodies[j].mass
+                bodies[i].vz -= bufs.Δz[k] * bodies[j].mass
+
+                bodies[j].vx += bufs.Δx[k] * bodies[i].mass
+                bodies[j].vy += bufs.Δy[k] * bodies[i].mass
+                bodies[j].vz += bufs.Δz[k] * bodies[i].mass
+
+                k += 1
+            end#for
+        end#for
+    end#@inbounds
 
     for b in bodies
         b.x += dt * b.vx
@@ -127,7 +147,7 @@ function advance(bodies, dt)
 end
 
 function energy(bodies)
-    local e::Float64 = 0.0
+    local e::F64 = 0.0
     for i = 1:length(bodies)
         e += 0.5 * bodies[i].mass *
              (bodies[i].vx^2 + bodies[i].vy^2 + bodies[i].vz^2)
@@ -179,16 +199,17 @@ function perf_nbody(N::Int=1000)
     sun = Body(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, solar_mass)
 
     bodies = [sun, jupiter, saturn, uranus, neptune]
-
     init_sun(bodies)
+
+    bufs = Buffers(10)
+
     @printf("%.9f\n", energy(bodies))
     for i = 1:N
-        advance(bodies, 0.01)
+        advance!(bodies, 0.01, bufs)
     end
     @printf("%.9f\n", energy(bodies))
 end
 
 end # module
 
-n = parse(Int,ARGS[1])
-NBody.perf_nbody(n)
+isinteractive() || NBody.perf_nbody(parse(Int, ARGS[1]))
